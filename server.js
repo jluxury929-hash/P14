@@ -1,230 +1,142 @@
-// ===============================================================================
-// APEX TITAN FLASH v13.0 - HIGH-FREQUENCY 50 ETH CLUSTER (REAL EXECUTION)
-// ===============================================================================
+/**
+ * ⚡ REAL MEMPOOL SCANNER (EDUCATIONAL)
+ * * --------------------------------------------------------------------------------
+ * This script connects to a REAL RPC provider and listens for pending transactions.
+ * It filters for "Whale" movements (High ETH value).
+ * * NOTE: This is the "Driver" node. To actually EXECUTE a flash loan or sandwich,
+ * you would need to deploy a Solidity Smart Contract and call it from here.
+ * Javascript alone cannot execute atomic flash loans.
+ * * --------------------------------------------------------------------------------
+ */
 
-const cluster = require('cluster');
-const os = require('os');
-const http = require('http');
-const axios = require('axios'); // Required for Private Relay
-const { ethers, WebSocketProvider, JsonRpcProvider, Wallet, Interface, parseEther, formatEther } = require('ethers');
-require('dotenv').config();
-
-// --- THEME ENGINE ---
-const TXT = {
-    reset: "\x1b[0m", bold: "\x1b[1m", dim: "\x1b[2m",
-    green: "\x1b[32m", cyan: "\x1b[36m", yellow: "\x1b[33m", 
-    magenta: "\x1b[35m", blue: "\x1b[34m", red: "\x1b[31m",
-    gold: "\x1b[38;5;220m", silver: "\x1b[38;5;250m"
-};
+import { WebSocketProvider, ethers, formatEther } from 'ethers';
 
 // --- CONFIGURATION ---
 const CONFIG = {
-    // 🔒 PROFIT DESTINATION (LOCKED)
-    BENEFICIARY: "0x4B8251e7c80F910305bb81547e301DcB8A596918",
+    // 🌍 NETWORK SELECTION
+    // Switch the WSS_URL below to the network you want to scan.
+    
+    // OPTION 1: ETHEREUM MAINNET (Infura)
+    WSS_URL: "wss://mainnet.infura.io/ws/v3/e601dc0b8ff943619576956539dd3b82",
 
-    CHAIN_ID: 8453,
-    // Contract from your snippet
-    TARGET_CONTRACT: "0x83EF5c401fAa5B9674BAfAcFb089b30bAc67C9A0",
-    
-    // ⚡ INFRASTRUCTURE
-    PORT: parseInt(process.env.PORT || "8080"), // Fixed Port Parsing
-    WSS_URL: process.env.WSS_URL || "wss://base-rpc.publicnode.com",
-    RPC_URL: (process.env.WSS_URL || "https://mainnet.base.org").replace("wss://", "https://"),
-    PRIVATE_RELAY: "https://base.merkle.io", // Bypass Public Mempool
-    
-    // 🏦 ASSETS
-    WETH: "0x4200000000000000000000000000000000000006",
-    USDC: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    // OPTION 2: BASE MAINNET (Alchemy) - Uncomment to use
+    // WSS_URL: "wss://base-mainnet.g.alchemy.com/v2/3xWq_7IHI0NJUPw8H0NQ_",
 
-    // 🔮 ORACLES
-    GAS_ORACLE: "0x420000000000000000000000000000000000000F",
-    CHAINLINK_FEED: "0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70",
+    // 📚 AVAILABLE ENDPOINTS (Reference)
+    NETWORKS: {
+        ETH_MAINNET: {
+            WSS: "wss://mainnet.infura.io/ws/v3/e601dc0b8ff943619576956539dd3b82"
+        },
+        BASE_MAINNET: {
+            ALCHEMY_HTTPS: "https://base-mainnet.g.alchemy.com/v2/3xWq_7IHI0NJUPw8H0NQ_",
+            ALCHEMY_WSS: "wss://base-mainnet.g.alchemy.com/v2/3xWq_7IHI0NJUPw8H0NQ_",
+            INFURA_HTTPS: "https://base-mainnet.infura.io/ws/v3/e601dc0b8ff943619576956539dd3b82"
+        }
+    },
     
-    // ⚙️ TITAN STRATEGY SETTINGS
-    LOAN_AMOUNT: parseEther("50"), // FIXED 50 ETH HIGH-IMPACT STRIKE
-    GAS_LIMIT: 850000n, 
-    PRIORITY_BRIBE: 15n, // 15% Tip to be FIRST
-    MIN_NET_PROFIT: "0.015" // Minimum net profit in ETH
+    // 🐋 WHALE SETTINGS
+    MIN_WHALE_VALUE: 10.0, // Only show transactions moving > 10 ETH
 };
 
-// --- MASTER PROCESS ---
-if (cluster.isPrimary) {
+// --- LOGGING UTILS ---
+const colors = {
+    reset: "\x1b[0m",
+    green: "\x1b[32m",
+    yellow: "\x1b[33m",
+    red: "\x1b[31m",
+    cyan: "\x1b[36m",
+    gold: "\x1b[38;5;220m",
+    dim: "\x1b[2m"
+};
+
+const log = (msg, color = colors.reset) => {
+    const timestamp = new Date().toLocaleTimeString();
+    console.log(`${colors.dim}[${timestamp}]${colors.reset} ${color}${msg}${colors.reset}`);
+};
+
+async function startRealScanner() {
     console.clear();
-    console.log(`${TXT.bold}${TXT.gold}╔════════════════════════════════════════════════════════╗${TXT.reset}`);
-    console.log(`${TXT.bold}${TXT.gold}║   ⚡ TITAN FLASH MASTER | 50 ETH CLUSTER EDITION       ║${TXT.reset}`);
-    console.log(`${TXT.bold}${TXT.gold}║   MODE: REAL EXECUTION | WALLET ETH REQUIRED           ║${TXT.reset}`);
-    console.log(`${TXT.bold}${TXT.gold}╚════════════════════════════════════════════════════════╝${TXT.reset}\n`);
-    
-    console.log(`${TXT.cyan}[SYSTEM] Initializing Multi-Core Architecture...${TXT.reset}`);
-    console.log(`${TXT.magenta}🎯 PROFIT TARGET LOCKED: ${CONFIG.BENEFICIARY}${TXT.reset}\n`);
+    console.log(`${colors.gold}
+╔════════════════════════════════════════════════════════╗
+║   ⚡ ETHEREUM/BASE REAL-TIME SCANNER                   ║
+║   Waiting for pending transactions...                  ║
+╚════════════════════════════════════════════════════════╝${colors.reset}`);
 
-    // Spawn a dedicated worker
-    for (let i = 0; i < os.cpus().length; i++) {
-        cluster.fork();
+    if (CONFIG.WSS_URL.includes("YOUR_INFURA_KEY")) {
+        log("❌ ERROR: You must provide a valid WSS URL in the CONFIG object.", colors.red);
+        log("   Sign up for Infura, Alchemy, or QuickNode to get a WSS URL.", colors.red);
+        process.exit(1);
     }
-
-    cluster.on('exit', (worker, code, signal) => {
-        console.log(`${TXT.red}⚠️ Worker ${worker.process.pid} died. Respawning...${TXT.reset}`);
-        cluster.fork();
-    });
-} 
-// --- WORKER PROCESS ---
-else {
-    initWorker();
-}
-
-async function initWorker() {
-    // 1. SETUP NATIVE SERVER (Health Check)
-    const server = http.createServer((req, res) => {
-        if (req.method === 'GET' && req.url === '/status') {
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ status: "ONLINE", mode: "TITAN_FLASH_50ETH", target: CONFIG.BENEFICIARY }));
-        } else {
-            res.writeHead(404);
-            res.end();
-        }
-    });
-
-    const workerPort = CONFIG.PORT + (cluster.worker ? cluster.worker.id : 0);
-    server.listen(workerPort, () => {
-        // console.log(`🌐 Native Server active on port ${CONFIG.PORT}`);
-    });
-
-    // 2. SETUP BOT LOGIC
-    let rawKey = process.env.TREASURY_PRIVATE_KEY || process.env.PRIVATE_KEY;
-    if (!rawKey) { 
-        // For canvas display purposes, prevent crash if no key, but warn heavily
-        console.error(`${TXT.red}❌ FATAL: Private Key missing in .env. Execution will fail.${TXT.reset}`); 
-        rawKey = "0x0000000000000000000000000000000000000000000000000000000000000001";
-    }
-    const cleanKey = rawKey.trim();
 
     try {
-        const httpProvider = new JsonRpcProvider(CONFIG.RPC_URL);
-        const wsProvider = new WebSocketProvider(CONFIG.WSS_URL);
-        const signer = new Wallet(cleanKey, httpProvider);
-
+        const provider = new WebSocketProvider(CONFIG.WSS_URL);
+        
         // Wait for connection
-        await new Promise((resolve) => wsProvider.once("block", resolve));
+        log(`[SYSTEM] Connecting to Network...`, colors.cyan);
+        log(`[SYSTEM] Endpoint: ${CONFIG.WSS_URL}`, colors.dim);
+        
+        const network = await provider.getNetwork(); // Verifies connection
+        log(`[SYSTEM] Connected to Chain ID: ${network.chainId}! Listening for pending txs...`, colors.green);
 
-        // Contracts
-        const titanIface = new Interface([
-            "function requestTitanLoan(address _token, uint256 _amount, address[] calldata _path)"
-        ]);
-        const oracleContract = new ethers.Contract(CONFIG.GAS_ORACLE, ["function getL1Fee(bytes memory _data) public view returns (uint256)"], httpProvider);
-        const priceFeed = new ethers.Contract(CONFIG.CHAINLINK_FEED, ["function latestRoundData() view returns (uint80,int256,uint256,uint256,uint80)"], httpProvider);
-
-        // Sync State
-        let nextNonce = await httpProvider.getTransactionCount(signer.address);
-        let currentEthPrice = 0;
-        let scanCount = 0;
-
-        const balance = await httpProvider.getBalance(signer.address);
-        console.log(`${TXT.green}✅ TITAN WORKER ACTIVE${TXT.reset} | ${TXT.gold}Treasury: ${formatEther(balance)} ETH${TXT.reset}`);
-
-        // Price Loop
-        setInterval(async () => {
+        // --- REAL LISTENER ---
+        // This fires for EVERY transaction broadcast to the network
+        provider.on("pending", async (txHash) => {
             try {
-                const [, price] = await priceFeed.latestRoundData();
-                currentEthPrice = Number(price) / 1e8;
-            } catch (e) {}
-        }, 10000);
+                // Fetch full transaction details from the hash
+                const tx = await provider.getTransaction(txHash);
 
-        // Mempool Sniping (Upgraded from Block Scanning for Speed)
-        wsProvider.on("pending", async (txHash) => {
-            scanCount++;
-            process.stdout.write(`\r${TXT.blue}⚡ SCANNING${TXT.reset} | Txs: ${scanCount} | ETH: $${currentEthPrice.toFixed(2)} `);
+                // Sometimes tx is null if it was dropped or confirmed instantly
+                if (!tx) return;
 
-            // Simulation Trigger (Real logic would filter specific router targets here)
-            if (Math.random() > 0.9995) {
-                process.stdout.write(`\n${TXT.magenta}🌊 50 ETH OPPORTUNITY DETECTED: ${txHash.substring(0,10)}...${TXT.reset}\n`);
-                await executeTitanStrike(httpProvider, signer, titanIface, oracleContract, nextNonce, currentEthPrice);
+                const valueEth = parseFloat(formatEther(tx.value));
+
+                // FILTER: We only care about "Whales" (High Value)
+                if (valueEth >= CONFIG.MIN_WHALE_VALUE) {
+                    
+                    console.log(`\n${colors.gold}⚡ WHALE DETECTED: ${txHash.substring(0, 10)}...${colors.reset}`);
+                    console.log(`   💰 Value: ${colors.green}${valueEth.toFixed(2)} ETH${colors.reset}`);
+                    console.log(`   📍 From:  ${tx.from.substring(0, 10)}...`);
+                    console.log(`   🎯 To:    ${tx.to ? tx.to.substring(0, 10) + '...' : 'Contract Creation'}`);
+                    console.log(`   ⛽ Gas:   ${formatEther(tx.gasPrice || 0)} ETH`);
+                    
+                    // --- STRATEGY ANALYSIS (SIMULATED) ---
+                    analyzeArbitrageOpportunity(tx, valueEth);
+                }
+            } catch (err) {
+                // Ignore fetch errors, common in high-speed scanning
             }
         });
 
-        wsProvider.websocket.onclose = () => {
-            console.warn(`\n${TXT.red}⚠️ SOCKET LOST. REBOOTING...${TXT.reset}`);
-            process.exit(1);
-        };
-
-    } catch (e) {
-        console.error(`\n${TXT.red}❌ BOOT ERROR: ${e.message}${TXT.reset}`);
-        setTimeout(initWorker, 5000);
+    } catch (error) {
+        log(`[ERROR] Connection failed: ${error.message}`, colors.red);
     }
 }
 
-async function executeTitanStrike(provider, signer, iface, oracle, nonce, ethPrice) {
-    try {
-        console.log(`${TXT.yellow}🔄 CALCULATING TITAN VECTOR (50 ETH)...${TXT.reset}`);
+function analyzeArbitrageOpportunity(tx, value) {
+    // IN A REAL BOT: 
+    // You would now check if this transaction interacts with Uniswap/Sushiswap.
+    // If it does, you calculate if it will change the price enough to be profitable.
 
-        const path = [CONFIG.WETH, CONFIG.USDC];
-        const loanAmount = CONFIG.LOAN_AMOUNT;
-
-        // 1. DYNAMIC ENCODING
-        const strikeData = iface.encodeFunctionData("requestTitanLoan", [
-            CONFIG.WETH, loanAmount, path
-        ]);
-
-        // 2. PRE-FLIGHT SIMULATION
-        // THIS IS THE "REAL" CHECK - Runs on blockchain node
-        const [simulation, l1Fee, feeData] = await Promise.all([
-            provider.call({ to: CONFIG.TARGET_CONTRACT, data: strikeData, from: signer.address }).catch(() => null),
-            oracle.getL1Fee(strikeData),
-            provider.getFeeData()
-        ]);
-
-        if (!simulation) {
-             console.log(`${TXT.dim}❌ Simulation Reverted (No Profit)${TXT.reset}`);
-             return;
-        }
-
-        // 3. COST ANALYSIS (50 ETH Strategy)
-        // Aave V3 Fee: 0.05% of 50 ETH = 0.025 ETH
-        const aaveFee = (loanAmount * 5n) / 10000n;
-        const aggressivePriority = (feeData.maxPriorityFeePerGas * (100n + CONFIG.PRIORITY_BRIBE)) / 100n;
-        const l2Cost = CONFIG.GAS_LIMIT * feeData.maxFeePerGas;
-        const totalCost = l2Cost + l1Fee + aaveFee;
+    // Uniswap V3 SwapRouter02 Address (Common across Mainnet, Base, Optimism, etc.)
+    const isUniswapRouter = (tx.to === "0xE592427A0AEce92De3Edee1F18E0157C05861564") || 
+                            (tx.to === "0x2626664c2603336E57B271c5C0b26F421741e481"); // Base specific V3
+    
+    if (isUniswapRouter) {
+        log(`   🚨 TARGET IS UNISWAP V3! Potential Sandwich Opportunity.`, colors.red);
         
-        const netProfit = BigInt(simulation) - totalCost;
-        const minProfit = parseEther(CONFIG.MIN_NET_PROFIT);
-
-        if (netProfit > minProfit) {
-            const profitUSD = parseFloat(formatEther(netProfit)) * ethPrice;
-            console.log(`\n${TXT.green}💎 TITAN FLASH CONFIRMED${TXT.reset}`);
-            console.log(`${TXT.gold}💰 Net Profit: ${formatEther(netProfit)} ETH (~$${profitUSD.toFixed(2)})${TXT.reset}`);
-            
-            // 4. BUNDLE EXECUTION (REAL SIGNING)
-            const tx = {
-                to: CONFIG.TARGET_CONTRACT,
-                data: strikeData,
-                gasLimit: CONFIG.GAS_LIMIT,
-                maxFeePerGas: feeData.maxFeePerGas,
-                maxPriorityFeePerGas: aggressivePriority,
-                nonce: nonce,
-                type: 2,
-                chainId: CONFIG.CHAIN_ID
-            };
-
-            const signedTx = await signer.signTransaction(tx);
-            console.log(`${TXT.cyan}🚀 RELAYING TO MERKLE...${TXT.reset}`);
-            
-            // 5. PRIVATE RELAY (MEV Protection)
-            const response = await axios.post(CONFIG.PRIVATE_RELAY, {
-                jsonrpc: "2.0",
-                id: 1,
-                method: "eth_sendRawTransaction",
-                params: [signedTx]
-            });
-
-            if (response.data.result) {
-                console.log(`${TXT.green}🎉 SUCCESS: ${response.data.result}${TXT.reset}`);
-                console.log(`${TXT.bold}💸 FUNDS SECURED AT: ${CONFIG.BENEFICIARY}${TXT.reset}`);
-                process.exit(0);
-            } else {
-                 console.log(`${TXT.red}❌ REJECTED: ${JSON.stringify(response.data)}${TXT.reset}`);
-            }
-        }
-    } catch (e) {
-        console.error(`${TXT.red}⚠️ EXEC ERROR: ${e.message}${TXT.reset}`);
+        // --- EXECUTION BLOCK ---
+        // REAL MEV BOTS DO THIS:
+        // 1. Calculate the exact price impact of the user's trade.
+        // 2. Create a "Bundle" containing:
+        //    - [0] YOUR BUY TX (Frontrun)
+        //    - [1] USER TX (The Whale)
+        //    - [2] YOUR SELL TX (Backrun)
+        // 3. Send this bundle to Flashbots (not public mempool).
+        
+        log(`   ⚠️ EXECUTION SKIPPED: Requires Solidity Smart Contract & Flashbots Auth.`, colors.dim);
+    } else {
+        log(`   ℹ️ Standard Transfer (Not a DEX trade). Ignoring.`, colors.dim);
     }
 }
+
+startRealScanner();
