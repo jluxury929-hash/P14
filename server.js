@@ -2,10 +2,9 @@
  * ⚡ REAL MEMPOOL SCANNER (EDUCATIONAL)
  * * --------------------------------------------------------------------------------
  * This script connects to a REAL RPC provider and listens for pending transactions.
- * It filters for "Whale" movements (High ETH value).
+ * It filters for "Whale" movements AND specific interactions with a target address.
  * * NOTE: This is the "Driver" node. To actually EXECUTE a flash loan or sandwich,
  * you would need to deploy a Solidity Smart Contract and call it from here.
- * Javascript alone cannot execute atomic flash loans.
  * * --------------------------------------------------------------------------------
  */
 
@@ -19,21 +18,9 @@ const CONFIG = {
     // OPTION 1: ETHEREUM MAINNET (Infura)
     WSS_URL: "wss://mainnet.infura.io/ws/v3/e601dc0b8ff943619576956539dd3b82",
 
-    // OPTION 2: BASE MAINNET (Alchemy) - Uncomment to use
-    // WSS_URL: "wss://base-mainnet.g.alchemy.com/v2/3xWq_7IHI0NJUPw8H0NQ_",
+    // 🎯 TARGET ADDRESS TO ANALYZE
+    TARGET_ADDRESS: "0x35c3ECfFBBDd942a8DbA7587424b58f74d6d6d15",
 
-    // 📚 AVAILABLE ENDPOINTS (Reference)
-    NETWORKS: {
-        ETH_MAINNET: {
-            WSS: "wss://mainnet.infura.io/ws/v3/e601dc0b8ff943619576956539dd3b82"
-        },
-        BASE_MAINNET: {
-            ALCHEMY_HTTPS: "https://base-mainnet.g.alchemy.com/v2/3xWq_7IHI0NJUPw8H0NQ_",
-            ALCHEMY_WSS: "wss://base-mainnet.g.alchemy.com/v2/3xWq_7IHI0NJUPw8H0NQ_",
-            INFURA_HTTPS: "https://base-mainnet.infura.io/ws/v3/e601dc0b8ff943619576956539dd3b82"
-        }
-    },
-    
     // 🐋 WHALE SETTINGS
     MIN_WHALE_VALUE: 10.0, // Only show transactions moving > 10 ETH
 };
@@ -46,6 +33,7 @@ const colors = {
     red: "\x1b[31m",
     cyan: "\x1b[36m",
     gold: "\x1b[38;5;220m",
+    magenta: "\x1b[35m",
     dim: "\x1b[2m"
 };
 
@@ -59,51 +47,59 @@ async function startRealScanner() {
     console.log(`${colors.gold}
 ╔════════════════════════════════════════════════════════╗
 ║   ⚡ ETHEREUM/BASE REAL-TIME SCANNER                   ║
-║   Waiting for pending transactions...                  ║
+║   WATCHING: ${CONFIG.TARGET_ADDRESS.substring(0, 12)}... ║
 ╚════════════════════════════════════════════════════════╝${colors.reset}`);
 
     if (CONFIG.WSS_URL.includes("YOUR_INFURA_KEY")) {
         log("❌ ERROR: You must provide a valid WSS URL in the CONFIG object.", colors.red);
-        log("   Sign up for Infura, Alchemy, or QuickNode to get a WSS URL.", colors.red);
         process.exit(1);
     }
 
     try {
         const provider = new WebSocketProvider(CONFIG.WSS_URL);
         
-        // Wait for connection
         log(`[SYSTEM] Connecting to Network...`, colors.cyan);
         log(`[SYSTEM] Endpoint: ${CONFIG.WSS_URL}`, colors.dim);
         
-        const network = await provider.getNetwork(); // Verifies connection
-        log(`[SYSTEM] Connected to Chain ID: ${network.chainId}! Listening for pending txs...`, colors.green);
+        const network = await provider.getNetwork();
+        log(`[SYSTEM] Connected to Chain ID: ${network.chainId}! Listening...`, colors.green);
 
         // --- REAL LISTENER ---
-        // This fires for EVERY transaction broadcast to the network
         provider.on("pending", async (txHash) => {
             try {
-                // Fetch full transaction details from the hash
                 const tx = await provider.getTransaction(txHash);
 
-                // Sometimes tx is null if it was dropped or confirmed instantly
                 if (!tx) return;
 
                 const valueEth = parseFloat(formatEther(tx.value));
+                
+                // --- TARGET ANALYSIS LOGIC ---
+                const isToTarget = tx.to && tx.to.toLowerCase() === CONFIG.TARGET_ADDRESS.toLowerCase();
+                const isFromTarget = tx.from && tx.from.toLowerCase() === CONFIG.TARGET_ADDRESS.toLowerCase();
 
-                // FILTER: We only care about "Whales" (High Value)
-                if (valueEth >= CONFIG.MIN_WHALE_VALUE) {
+                // TRIGGER: If it's a whale OR it's our target address
+                if (valueEth >= CONFIG.MIN_WHALE_VALUE || isToTarget || isFromTarget) {
                     
-                    console.log(`\n${colors.gold}⚡ WHALE DETECTED: ${txHash.substring(0, 10)}...${colors.reset}`);
-                    console.log(`   💰 Value: ${colors.green}${valueEth.toFixed(2)} ETH${colors.reset}`);
-                    console.log(`   📍 From:  ${tx.from.substring(0, 10)}...`);
-                    console.log(`   🎯 To:    ${tx.to ? tx.to.substring(0, 10) + '...' : 'Contract Creation'}`);
+                    if (isToTarget || isFromTarget) {
+                        console.log(`\n${colors.magenta}${colors.bold}🎯 TARGET ACTIVITY DETECTED${colors.reset}`);
+                        console.log(`   Hash: ${txHash}`);
+                        console.log(`   Direction: ${isFromTarget ? 'Outgoing ➔' : 'Incoming ➔'}`);
+                    } else {
+                        console.log(`\n${colors.gold}⚡ WHALE DETECTED: ${txHash.substring(0, 10)}...${colors.reset}`);
+                    }
+
+                    console.log(`   💰 Value: ${colors.green}${valueEth.toFixed(4)} ETH${colors.reset}`);
+                    console.log(`   📍 From:  ${tx.from}`);
+                    console.log(`   🎯 To:    ${tx.to ? tx.to : 'Contract Creation'}`);
                     console.log(`   ⛽ Gas:   ${formatEther(tx.gasPrice || 0)} ETH`);
                     
-                    // --- STRATEGY ANALYSIS (SIMULATED) ---
-                    analyzeArbitrageOpportunity(tx, valueEth);
+                    // Specific Strategy Analysis
+                    if (tx.to) {
+                        analyzeArbitrageOpportunity(tx, valueEth);
+                    }
                 }
             } catch (err) {
-                // Ignore fetch errors, common in high-speed scanning
+                // Network noise
             }
         });
 
@@ -113,29 +109,16 @@ async function startRealScanner() {
 }
 
 function analyzeArbitrageOpportunity(tx, value) {
-    // IN A REAL BOT: 
-    // You would now check if this transaction interacts with Uniswap/Sushiswap.
-    // If it does, you calculate if it will change the price enough to be profitable.
-
-    // Uniswap V3 SwapRouter02 Address (Common across Mainnet, Base, Optimism, etc.)
-    const isUniswapRouter = (tx.to === "0xE592427A0AEce92De3Edee1F18E0157C05861564") || 
-                            (tx.to === "0x2626664c2603336E57B271c5C0b26F421741e481"); // Base specific V3
+    const isUniswapRouter = (tx.to.toLowerCase() === "0xE592427A0AEce92De3Edee1F18E0157C05861564".toLowerCase()) || 
+                            (tx.to.toLowerCase() === "0x2626664c2603336E57B271c5C0b26F421741e481".toLowerCase());
     
     if (isUniswapRouter) {
-        log(`   🚨 TARGET IS UNISWAP V3! Potential Sandwich Opportunity.`, colors.red);
-        
-        // --- EXECUTION BLOCK ---
-        // REAL MEV BOTS DO THIS:
-        // 1. Calculate the exact price impact of the user's trade.
-        // 2. Create a "Bundle" containing:
-        //    - [0] YOUR BUY TX (Frontrun)
-        //    - [1] USER TX (The Whale)
-        //    - [2] YOUR SELL TX (Backrun)
-        // 3. Send this bundle to Flashbots (not public mempool).
-        
-        log(`   ⚠️ EXECUTION SKIPPED: Requires Solidity Smart Contract & Flashbots Auth.`, colors.dim);
-    } else {
-        log(`   ℹ️ Standard Transfer (Not a DEX trade). Ignoring.`, colors.dim);
+        log(`   🚨 INTERACTION WITH UNISWAP V3 ROUTER!`, colors.red);
+        log(`   ℹ️ Potential Price Impact: ${value > 50 ? 'HIGH' : 'MEDIUM'}`, colors.yellow);
+        log(`   ⚠️ EXECUTION SKIPPED: Educational Mode.`, colors.dim);
+    } else if (tx.to.toLowerCase() === CONFIG.TARGET_ADDRESS.toLowerCase()) {
+        log(`   🔍 TARGET ANALYSIS: Direct interaction with monitored address.`, colors.magenta);
+        log(`   📊 Data Payload: ${tx.data.substring(0, 32)}...`, colors.dim);
     }
 }
 
